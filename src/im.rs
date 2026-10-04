@@ -1,16 +1,20 @@
 use std::{
-    collections::HashMap,
-    fs::File,
-    io::read_to_string,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
 use image::{ImageReader, Rgba, RgbaImage, imageops};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::iter::ParallelIterator as _;
+use rayon::iter::{IntoParallelIterator as _, ParallelIterator as _};
 use walkdir::{DirEntry, WalkDir};
 
+/// Thumbnail is practically identical to the full image's average.
+const AVG_THUMBNAIL_SIZE: u32 = 256;
+
+/// The file name in the folder that holds the image information.
 const IMAGE_DB_FILE_NAME: &str = "mosaic.json";
+
+/// The supported image formats.
 const SUPPORTED_FILE_TYPE: [&str; 5] = ["bmp", "jpeg", "jpg", "png", "webp"];
 
 fn is_supported_file(entry: &DirEntry) -> bool {
@@ -88,38 +92,53 @@ fn average_color(img: &RgbaImage) -> Rgba<u8> {
 
 type Cache = HashMap<String, [u8; 4]>;
 
-pub fn generate_cache(
-    src: &PathBuf,
-    regenerate: bool,
-) -> Result<Cache, Box<dyn std::error::Error>> {
-    let mut cache = Cache::new();
+pub fn generate_cache(src: &Path, regenerate: bool) -> Result<Cache, Box<dyn std::error::Error>> {
     let cache_file_location = src.join(IMAGE_DB_FILE_NAME);
     if cache_file_location.exists() && !regenerate {
         println!(
-            "Cache file already exists, using existing data. If the data is incomplete, re-run with -b flag."
+            "Cache file already exists, using existing data. \
+             If the data is incomplete, re-run with -b flag."
         );
-        let cache_file_conent =
-            read_to_string(File::open(cache_file_location)?).expect("File has compatible format.");
-        let cache: Cache = serde_json::from_str(&cache_file_conent)?;
+        let content = std::fs::read_to_string(&cache_file_location)
+            .map_err(|e| format!("cannot read cache file: {e}"))?;
+        let cache: Cache =
+            serde_json::from_str(&content).map_err(|e| format!("cache file is corrupt: {e}"))?;
         return Ok(cache);
     }
-    for path in get_image_paths(src) {
-        if let Some(image) = load_rgba(&path) {
-            let avg = average_color(&image);
-            cache.insert(path.to_str().expect("non-UTF-8 path").to_owned(), avg.0);
-        }
-    }
+
+    let paths = get_image_paths(&src.to_path_buf());
+    let pb = ProgressBar::new(paths.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template("Creating cache [{bar:40.cyan/blue}] ({percent}%) {msg}")
+            .expect("invalid progress template")
+            .progress_chars("#>-"),
+    );
+
+    let cache: Cache = paths
+        .into_par_iter()
+        .filter_map(|path| {
+            let img = load_rgba(&path)?;
+            let thumb = imageops::thumbnail(&img, AVG_THUMBNAIL_SIZE, AVG_THUMBNAIL_SIZE);
+            let avg = average_color(&thumb);
+            pb.inc(1);
+            Some((path.to_string_lossy().into_owned(), avg.0))
+        })
+        .collect();
+
     if cache.is_empty() {
-        eprintln!("No files found for cache.");
         return Err("Could not find any images for creating the cache. Exiting.".into());
     }
+
     let json = serde_json::to_string_pretty(&cache)?;
     std::fs::write(&cache_file_location, json)?;
+    pb.finish_with_message("done");
+
     println!(
         "Created cache file \"{}\" with {} entries.",
-        cache_file_location.into_string().expect("Valid path"),
+        cache_file_location.display(),
         cache.len()
     );
+
     Ok(cache)
 }
 
@@ -139,6 +158,15 @@ fn find_closest_match(cache: &Cache, value: Rgba<u8>) -> &str {
         .expect("cache must not be empty")
 }
 
+/// geometry + which cache image it resolved to.
+struct Tile {
+    x: i64,
+    y: i64,
+    width: u32,
+    height: u32,
+    key: String,
+}
+
 pub fn generate_mosaic(
     cache: &Cache,
     input_image: &Path,
@@ -155,18 +183,15 @@ pub fn generate_mosaic(
     let total = u64::from(grid_items).pow(2);
     let pb = ProgressBar::new(total);
     pb.set_style(
-        ProgressStyle::with_template("[{bar:40.cyan/blue}] ({percent}%) {msg}")
+        ProgressStyle::with_template("Generating     [{bar:40.cyan/blue}] ({percent}%) {msg}")
             .expect("invalid progress template")
             .progress_chars("#>-"),
     );
 
-    let mut canvas = RgbaImage::new(width, height);
-    let mut runtime_cache = HashMap::<Rgba<u8>, String>::new();
-    let mut image_cache = HashMap::<String, RgbaImage>::new();
-    let mut scaled_cache = HashMap::<(String, u32, u32), RgbaImage>::new();
-
-    for row in 0..grid_items {
-        for col in 0..grid_items {
+    let tiles: Vec<(i64, i64, u32, u32, Rgba<u8>)> = (0..grid_items)
+        .into_par_iter()
+        .flat_map(|row| (0..grid_items).into_par_iter().map(move |col| (row, col)))
+        .map(|(row, col)| {
             let x0 = col * width / grid_items;
             let x1 = (col + 1) * width / grid_items;
             let y0 = row * height / grid_items;
@@ -176,29 +201,57 @@ pub fn generate_mosaic(
             let tile = imageops::crop_imm(&img, x0, y0, tile_width, tile_height);
             let avg = average_color(&tile.to_image());
 
+            (i64::from(x0), i64::from(y0), tile_width, tile_height, avg)
+        })
+        .collect();
+
+    let mut runtime_cache = HashMap::<Rgba<u8>, String>::new();
+    let tiles: Vec<Tile> = tiles
+        .into_iter()
+        .map(|(x, y, width, height, avg)| {
             let key = runtime_cache
                 .entry(avg)
                 .or_insert_with(|| find_closest_match(cache, avg).to_owned())
                 .clone();
+            Tile {
+                x,
+                y,
+                width,
+                height,
+                key,
+            }
+        })
+        .collect();
 
-            let decoded = image_cache
-                .entry(key.clone())
-                .or_insert_with(|| load_rgba(Path::new(&key)).expect("cache image disappeared"));
+    let wanted: HashSet<(String, u32, u32)> = tiles
+        .iter()
+        .map(|t| (t.key.clone(), t.width, t.height))
+        .collect();
+    let pb_load = ProgressBar::new(wanted.len() as u64);
+    pb_load.set_style(
+        ProgressStyle::with_template("Loading data   [{bar:40.cyan/blue}]")
+            .expect("invalid progress template")
+            .progress_chars("#>-"),
+    );
 
-            let scaled = scaled_cache
-                .entry((key.clone(), tile_width, tile_height))
-                .or_insert_with(|| {
-                    imageops::resize(
-                        decoded,
-                        tile_width,
-                        tile_height,
-                        imageops::FilterType::Triangle,
-                    )
-                });
+    let scaled: HashMap<(String, u32, u32), RgbaImage> = wanted
+        .into_par_iter()
+        .filter_map(|(key, tw, th)| {
+            let img = load_rgba(Path::new(&key))?;
+            let s = imageops::resize(&img, tw, th, imageops::FilterType::Triangle);
+            pb_load.inc(1);
+            Some(((key, tw, th), s))
+        })
+        .collect();
+    pb_load.finish();
 
-            imageops::overlay(&mut canvas, scaled, x0.into(), y0.into());
-            pb.inc(1);
-        }
+    let mut canvas = RgbaImage::new(width, height);
+    for tile in &tiles {
+        let s = scaled
+            .get(&(tile.key.clone(), tile.width, tile.height))
+            .ok_or_else(|| format!("failed to load mosaic image: {}", tile.key))?;
+        imageops::overlay(&mut canvas, s, tile.x, tile.y);
+        pb.inc(1);
     }
     pb.finish_with_message("done");
     canvas.save(output)?;

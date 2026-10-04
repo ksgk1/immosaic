@@ -2,7 +2,7 @@
     authors = ["ksgk1"]
     edition = "2024"
     name    = "immosaic"
-    version = "0.2.0"
+    version = "0.2.1"
 
 [[bin]]
     name = "immosaic"
