@@ -6,6 +6,7 @@ use std::{
 };
 
 use image::{ImageReader, Rgba, RgbaImage, imageops};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator as _;
 use walkdir::{DirEntry, WalkDir};
 
@@ -151,6 +152,14 @@ pub fn generate_mosaic(
         .ok_or_else(|| format!("failed to load image: {}", input_image.display()))?;
     let (width, height) = img.dimensions();
 
+    let total = u64::from(grid_items).pow(2);
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template("[{bar:40.cyan/blue}] ({percent}%) {msg}")
+            .expect("invalid progress template")
+            .progress_chars("#>-"),
+    );
+
     let mut canvas = RgbaImage::new(width, height);
     let mut runtime_cache = HashMap::<Rgba<u8>, String>::new();
     let mut image_cache = HashMap::<String, RgbaImage>::new();
@@ -188,9 +197,10 @@ pub fn generate_mosaic(
                 });
 
             imageops::overlay(&mut canvas, scaled, x0.into(), y0.into());
+            pb.inc(1);
         }
     }
-
+    pb.finish_with_message("done");
     canvas.save(output)?;
     Ok(())
 }
