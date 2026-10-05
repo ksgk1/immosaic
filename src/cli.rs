@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 pub struct Args {
     pub folder_sources: PathBuf,
-    pub input_image: PathBuf,
-    pub output_path: PathBuf,
-    pub build_cache: bool,
+    pub input_image:    PathBuf,
+    pub output_path:    PathBuf,
+    pub build_cache:    bool,
     pub tiles_per_side: u8,
 }
 
@@ -40,9 +40,7 @@ pub fn parse_args() -> Result<Args, lexopt::Error> {
                     .ok()
                     .and_then(|p| p.file_name().and_then(|n| n.to_str().map(String::from)))
                     .unwrap_or_else(|| String::from("immosaic"));
-                println!(
-                    "Usage: {exe} --sources <path-to-source-image-dir> --output mosaic.png --input-image source.jpg --tiles-per-side 50"
-                );
+                println!("Usage: {exe} --sources <path-to-source-image-dir> --output mosaic.png --input-image source.jpg --tiles-per-side 50");
                 std::process::exit(0);
             }
             _ => return Err(arg.unexpected()),

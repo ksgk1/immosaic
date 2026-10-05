@@ -1,0 +1,10 @@
+enum_discrim_align_threshold = 20
+fn_params_layout             = "Compressed"
+force_multiline_blocks       = false
+group_imports                = "StdExternalCrate"
+imports_granularity          = "Module"
+max_width                    = 160
+reorder_impl_items           = true
+struct_field_align_threshold = 20
+style_edition                = "2024"
+wrap_comments                = true
