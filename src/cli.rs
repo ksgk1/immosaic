@@ -4,35 +4,35 @@ pub struct Args {
     pub folder_sources: PathBuf,
     pub input_image:    PathBuf,
     pub output_path:    PathBuf,
-    pub build_cache:    bool,
+    pub rebuild_cache:  bool,
     pub tiles_per_side: u8,
 }
 
 pub fn parse_args() -> Result<Args, lexopt::Error> {
     use lexopt::prelude::*;
 
+    let mut parser = lexopt::Parser::from_env();
     let mut folder_sources = PathBuf::new();
     let mut input_image = PathBuf::new();
     let mut output_path = PathBuf::new();
-    let mut build_cache = false;
-    let mut parser = lexopt::Parser::from_env();
+    let mut rebuild_cache = false;
     let mut tiles_per_side = 10;
 
     while let Some(arg) = parser.next()? {
         match arg {
-            Short('s') | Long("sources") => {
+            Long("sources") => {
                 folder_sources = parser.value()?.parse()?;
             }
-            Short('i') | Long("input-image") => {
+            Long("input-image") => {
                 input_image = parser.value()?.parse()?;
             }
-            Short('o') | Long("output") => {
+            Long("output") => {
                 output_path = parser.value()?.parse()?;
             }
-            Short('b') | Long("build-cache") => {
-                build_cache = true;
+            Long("rebuild-cache") => {
+                rebuild_cache = true;
             }
-            Short('t') | Long("tiles-per-side") => {
+            Long("tiles-per-side") => {
                 tiles_per_side = parser.value()?.parse()?;
             }
             Long("help") => {
@@ -51,7 +51,7 @@ pub fn parse_args() -> Result<Args, lexopt::Error> {
         folder_sources,
         input_image,
         output_path,
-        build_cache,
+        rebuild_cache,
         tiles_per_side,
     })
 }

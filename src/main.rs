@@ -1,7 +1,7 @@
 use std::process::exit;
 
 use crate::cli::parse_args;
-use crate::im::{generate_cache, generate_mosaic};
+use crate::im::Cache;
 
 mod cli;
 mod im;
@@ -13,8 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{} is not a directly. Exiting.", src.into_string().expect("Path is valid string."));
         exit(1);
     }
-    let cache = generate_cache(&src, args.build_cache)?;
+    let cache = Cache::generate_from_path(&src, args.rebuild_cache)?;
 
     let input_image = args.input_image;
-    generate_mosaic(&cache, &input_image, &args.output_path, u32::from(args.tiles_per_side))
+    cache.generate_mosaic(&input_image, &args.output_path, u32::from(args.tiles_per_side))
 }
