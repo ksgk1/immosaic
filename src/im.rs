@@ -1,11 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
-};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use image::{ImageReader, Rgba, RgbaImage, imageops};
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::iter::{IntoParallelIterator as _, ParallelIterator as _};
+use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
+use rayon::iter::{IntoParallelIterator as _, IntoParallelRefIterator as _, ParallelIterator as _};
 use walkdir::{DirEntry, WalkDir};
 
 /// Thumbnail is practically identical to the full image's average.
@@ -18,18 +16,14 @@ const IMAGE_DB_FILE_NAME: &str = "mosaic.json";
 const SUPPORTED_FILE_TYPE: [&str; 5] = ["bmp", "jpeg", "jpg", "png", "webp"];
 
 fn is_supported_file(entry: &DirEntry) -> bool {
-    entry.file_name().to_str().is_some_and(|s| {
-        SUPPORTED_FILE_TYPE
-            .iter()
-            .any(|ext| s.to_ascii_lowercase().ends_with(ext))
-    })
-}
-
-fn is_hidden(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .is_some_and(|s| s.starts_with('.'))
+        .is_some_and(|s| SUPPORTED_FILE_TYPE.iter().any(|ext| s.to_ascii_lowercase().ends_with(ext)))
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry.file_name().to_str().is_some_and(|s| s.starts_with('.'))
 }
 
 fn get_image_paths(src: &PathBuf) -> Vec<PathBuf> {
@@ -82,33 +76,39 @@ fn average_color(img: &RgbaImage) -> Rgba<u8> {
         return Rgba([0, 0, 0, 0]);
     }
 
-    Rgba([
-        (sum[0] / count) as u8,
-        (sum[1] / count) as u8,
-        (sum[2] / count) as u8,
-        (sum[3] / count) as u8,
-    ])
+    Rgba([(sum[0] / count) as u8, (sum[1] / count) as u8, (sum[2] / count) as u8, (sum[3] / count) as u8])
+}
+
+fn finish_with_elapsed(pb: &ProgressBar) {
+    pb.finish_with_message(format!("done in {}.", HumanDuration(pb.elapsed())));
 }
 
 type Cache = HashMap<String, [u8; 4]>;
 
 pub fn generate_cache(src: &Path, regenerate: bool) -> Result<Cache, Box<dyn std::error::Error>> {
+    let src = std::fs::canonicalize(src).map_err(|e| format!("cannot resolve source directory: {e}"))?;
     let cache_file_location = src.join(IMAGE_DB_FILE_NAME);
     if cache_file_location.exists() && !regenerate {
         println!(
             "Cache file already exists, using existing data. \
              If the data is incomplete, re-run with -b flag."
         );
-        let content = std::fs::read_to_string(&cache_file_location)
-            .map_err(|e| format!("cannot read cache file: {e}"))?;
-        let cache: Cache =
-            serde_json::from_str(&content).map_err(|e| format!("cache file is corrupt: {e}"))?;
+        let content = std::fs::read_to_string(&cache_file_location).map_err(|e| format!("cannot read cache file: {e}"))?;
+        let cache: Cache = serde_json::from_str(&content).map_err(|e| format!("cache file is corrupt: {e}"))?;
+        let cache = cache
+            .into_iter()
+            .map(|(rel, avg)| {
+                let full = src.join(&rel).to_string_lossy().into_owned();
+                (full, avg)
+            })
+            .collect();
+
         return Ok(cache);
     }
 
-    let paths = get_image_paths(&src.to_path_buf());
-    let pb = ProgressBar::new(paths.len() as u64);
-    pb.set_style(
+    let paths = get_image_paths(&src);
+    let pb_gen_cache = ProgressBar::new(paths.len() as u64);
+    pb_gen_cache.set_style(
         ProgressStyle::with_template("Creating cache [{bar:40.cyan/blue}] ({percent}%) {msg}")
             .expect("invalid progress template")
             .progress_chars("#>-"),
@@ -120,7 +120,7 @@ pub fn generate_cache(src: &Path, regenerate: bool) -> Result<Cache, Box<dyn std
             let img = load_rgba(&path)?;
             let thumb = imageops::thumbnail(&img, AVG_THUMBNAIL_SIZE, AVG_THUMBNAIL_SIZE);
             let avg = average_color(&thumb);
-            pb.inc(1);
+            pb_gen_cache.inc(1);
             Some((path.to_string_lossy().into_owned(), avg.0))
         })
         .collect();
@@ -129,15 +129,20 @@ pub fn generate_cache(src: &Path, regenerate: bool) -> Result<Cache, Box<dyn std
         return Err("Could not find any images for creating the cache. Exiting.".into());
     }
 
-    let json = serde_json::to_string_pretty(&cache)?;
-    std::fs::write(&cache_file_location, json)?;
-    pb.finish_with_message("done");
+    let rel_cache: Cache = cache
+        .iter()
+        .map(|(path, avg)| {
+            let p = Path::new(path.as_str());
+            let rel = p.strip_prefix(&src).unwrap_or(p).to_string_lossy().into_owned();
+            (rel, *avg)
+        })
+        .collect();
 
-    println!(
-        "Created cache file \"{}\" with {} entries.",
-        cache_file_location.display(),
-        cache.len()
-    );
+    let json = serde_json::to_string_pretty(&rel_cache)?;
+    std::fs::write(&cache_file_location, json)?;
+    finish_with_elapsed(&pb_gen_cache);
+
+    println!("Created cache file \"{}\" with {} entries.", cache_file_location.display(), cache.len());
 
     Ok(cache)
 }
@@ -145,7 +150,10 @@ pub fn generate_cache(src: &Path, regenerate: bool) -> Result<Cache, Box<dyn std
 fn rgba_difference(lhs: [u8; 4], rhs: [u8; 4]) -> u32 {
     lhs.iter()
         .zip(rhs.iter())
-        .map(|(a, b)| (i32::from(*a) - i32::from(*b)).unsigned_abs())
+        .map(|(a, b)| {
+            let d = i32::from(*a) - i32::from(*b);
+            (d * d).cast_unsigned()
+        })
         .sum()
 }
 
@@ -160,33 +168,19 @@ fn find_closest_match(cache: &Cache, value: Rgba<u8>) -> &str {
 
 /// geometry + which cache image it resolved to.
 struct Tile {
-    x: i64,
-    y: i64,
-    width: u32,
+    x:      i64,
+    y:      i64,
+    width:  u32,
     height: u32,
-    key: String,
+    key:    String,
 }
 
-pub fn generate_mosaic(
-    cache: &Cache,
-    input_image: &Path,
-    output: &Path,
-    grid_items: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn generate_mosaic(cache: &Cache, input_image: &Path, output: &Path, grid_items: u32) -> Result<(), Box<dyn std::error::Error>> {
     if cache.is_empty() {
         return Err("Cannot create image without cache.".into());
     }
-    let img = load_rgba(input_image)
-        .ok_or_else(|| format!("failed to load image: {}", input_image.display()))?;
+    let img = load_rgba(input_image).ok_or_else(|| format!("failed to load image: {}", input_image.display()))?;
     let (width, height) = img.dimensions();
-
-    let total = u64::from(grid_items).pow(2);
-    let pb = ProgressBar::new(total);
-    pb.set_style(
-        ProgressStyle::with_template("Generating     [{bar:40.cyan/blue}] ({percent}%) {msg}")
-            .expect("invalid progress template")
-            .progress_chars("#>-"),
-    );
 
     let tiles: Vec<(i64, i64, u32, u32, Rgba<u8>)> = (0..grid_items)
         .into_par_iter()
@@ -209,27 +203,15 @@ pub fn generate_mosaic(
     let tiles: Vec<Tile> = tiles
         .into_iter()
         .map(|(x, y, width, height, avg)| {
-            let key = runtime_cache
-                .entry(avg)
-                .or_insert_with(|| find_closest_match(cache, avg).to_owned())
-                .clone();
-            Tile {
-                x,
-                y,
-                width,
-                height,
-                key,
-            }
+            let key = runtime_cache.entry(avg).or_insert_with(|| find_closest_match(cache, avg).to_owned()).clone();
+            Tile { x, y, width, height, key }
         })
         .collect();
 
-    let wanted: HashSet<(String, u32, u32)> = tiles
-        .iter()
-        .map(|t| (t.key.clone(), t.width, t.height))
-        .collect();
+    let wanted: HashSet<(String, u32, u32)> = tiles.par_iter().map(|t| (t.key.clone(), t.width, t.height)).collect();
     let pb_load = ProgressBar::new(wanted.len() as u64);
     pb_load.set_style(
-        ProgressStyle::with_template("Loading data   [{bar:40.cyan/blue}]")
+        ProgressStyle::with_template("Loading data   [{bar:40.cyan/blue}] ({percent}%) {msg}")
             .expect("invalid progress template")
             .progress_chars("#>-"),
     );
@@ -243,17 +225,39 @@ pub fn generate_mosaic(
             Some(((key, tw, th), s))
         })
         .collect();
-    pb_load.finish();
+    finish_with_elapsed(&pb_load);
 
+    let pb_scale = ProgressBar::new(tiles.len() as u64);
+    pb_scale.set_style(
+        ProgressStyle::with_template("Scaling        [{bar:40.cyan/blue}] ({percent}%) {msg}")
+            .expect("invalid progress template")
+            .progress_chars("#>-"),
+    );
+    let scaled_tiles = tiles
+        .par_iter()
+        .map(|tile| {
+            let s = scaled
+                .get(&(tile.key.clone(), tile.width, tile.height))
+                .ok_or_else(|| format!("failed to load mosaic image: {}", tile.key))?;
+            pb_scale.inc(1);
+            Ok::<_, String>((s, tile.x, tile.y))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    finish_with_elapsed(&pb_scale);
+
+    let total = u64::from(grid_items).pow(2);
+    let pb_gen = ProgressBar::new(total);
+    pb_gen.set_style(
+        ProgressStyle::with_template("Generating     [{bar:40.cyan/blue}] ({percent}%) {msg}")
+            .expect("invalid progress template")
+            .progress_chars("#>-"),
+    );
     let mut canvas = RgbaImage::new(width, height);
-    for tile in &tiles {
-        let s = scaled
-            .get(&(tile.key.clone(), tile.width, tile.height))
-            .ok_or_else(|| format!("failed to load mosaic image: {}", tile.key))?;
-        imageops::overlay(&mut canvas, s, tile.x, tile.y);
-        pb.inc(1);
+    for (s, x, y) in scaled_tiles {
+        imageops::overlay(&mut canvas, s, x, y);
+        pb_gen.inc(1);
     }
-    pb.finish_with_message("done");
+    finish_with_elapsed(&pb_gen);
     canvas.save(output)?;
     Ok(())
 }
