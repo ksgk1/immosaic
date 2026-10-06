@@ -6,6 +6,7 @@ pub struct Args {
     pub output_path:    PathBuf,
     pub rebuild_cache:  bool,
     pub tiles_per_side: u8,
+    pub scale:          u8,
 }
 
 pub fn parse_args() -> Result<Args, lexopt::Error> {
@@ -17,6 +18,7 @@ pub fn parse_args() -> Result<Args, lexopt::Error> {
     let mut output_path = PathBuf::new();
     let mut rebuild_cache = false;
     let mut tiles_per_side = 10;
+    let mut scale = 1;
 
     while let Some(arg) = parser.next()? {
         match arg {
@@ -34,6 +36,10 @@ pub fn parse_args() -> Result<Args, lexopt::Error> {
             }
             Long("tiles-per-side") => {
                 tiles_per_side = parser.value()?.parse()?;
+            }
+            Long("scale") => {
+                scale = parser.value()?.parse()?;
+                scale = scale.clamp(1, 10);
             }
             Long("help") => {
                 let exe = std::env::current_exe()
@@ -53,5 +59,6 @@ pub fn parse_args() -> Result<Args, lexopt::Error> {
         output_path,
         rebuild_cache,
         tiles_per_side,
+        scale,
     })
 }

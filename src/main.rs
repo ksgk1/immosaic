@@ -16,5 +16,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = Cache::generate_from_path(&src, args.rebuild_cache)?;
 
     let input_image = args.input_image;
-    cache.generate_mosaic(&input_image, &args.output_path, u32::from(args.tiles_per_side))
+    cache.generate_mosaic(&input_image, &args.output_path, u32::from(args.tiles_per_side), u32::from(args.scale))
 }

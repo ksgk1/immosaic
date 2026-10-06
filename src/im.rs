@@ -197,7 +197,7 @@ impl Cache {
             .expect("cache must not be empty")
     }
 
-    pub fn generate_mosaic(&self, input_image: &Path, output: &Path, grid_items: u32) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn generate_mosaic(&self, input_image: &Path, output: &Path, grid_items: u32, scale: u32) -> Result<(), Box<dyn std::error::Error>> {
         /// geometry + which cache image it resolved to.
         struct Tile {
             x:      i64,
@@ -212,6 +212,7 @@ impl Cache {
         }
         let img = load_rgba(input_image).ok_or_else(|| format!("failed to load image: {}", input_image.display()))?;
         let (width, height) = img.dimensions();
+        let (out_width, out_height) = (width * scale, height * scale);
 
         let tiles: Vec<(i64, i64, u32, u32, Rgba<u8>)> = (0..grid_items)
             .into_par_iter()
@@ -239,7 +240,7 @@ impl Cache {
             })
             .collect();
 
-        let wanted: HashSet<(String, u32, u32)> = tiles.par_iter().map(|t| (t.key.clone(), t.width, t.height)).collect();
+        let wanted: HashSet<(String, u32, u32)> = tiles.par_iter().map(|t| (t.key.clone(), t.width * scale, t.height * scale)).collect();
         let pb_load = ProgressBar::new(wanted.len() as u64);
         pb_load.set_style(
             ProgressStyle::with_template("Loading data   [{bar:40.cyan/blue}] ({percent}%) {msg}")
@@ -267,10 +268,10 @@ impl Cache {
             .par_iter()
             .map(|tile| {
                 let s = scaled
-                    .get(&(tile.key.clone(), tile.width, tile.height))
+                    .get(&(tile.key.clone(), tile.width * scale, tile.height * scale))
                     .ok_or_else(|| format!("failed to load mosaic image: {}", tile.key))?;
                 pb_scale.inc(1);
-                Ok::<_, String>((s, tile.x, tile.y))
+                Ok::<_, String>((s, tile.x * i64::from(scale), tile.y * i64::from(scale)))
             })
             .collect::<Result<Vec<_>, _>>()?;
         finish_with_elapsed(&pb_scale);
@@ -282,7 +283,7 @@ impl Cache {
                 .expect("invalid progress template")
                 .progress_chars("#>-"),
         );
-        let mut canvas = RgbaImage::new(width, height);
+        let mut canvas = RgbaImage::new(out_width, out_height);
         for (s, x, y) in scaled_tiles {
             imageops::overlay(&mut canvas, s, x, y);
             pb_gen.inc(1);
