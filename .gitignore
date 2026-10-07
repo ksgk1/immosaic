@@ -8,3 +8,5 @@
 *.sh
 Dockerfile
 .dockerignore
+perf.data*
+flamegraph.svg

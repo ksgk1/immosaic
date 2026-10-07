@@ -5,16 +5,15 @@ use crate::im::Cache;
 
 mod cli;
 mod im;
+mod progress;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
-    let src = args.folder_sources;
+    let src = &args.folder_sources;
     if !src.is_dir() {
-        eprintln!("{} is not a directly. Exiting.", src.into_string().expect("Path is valid string."));
+        eprintln!("{} is not a directory. Exiting.", src.display());
         exit(1);
     }
-    let cache = Cache::generate_from_path(&src, args.rebuild_cache)?;
-
-    let input_image = args.input_image;
-    cache.generate_mosaic(&input_image, &args.output_path, u32::from(args.tiles_per_side), u32::from(args.scale))
+    let cache = Cache::generate_from_path(src, args.rebuild_cache)?;
+    cache.generate_mosaic(&args.input_image, &args.output_path, u32::from(args.tiles_per_side), u32::from(args.scale))
 }
